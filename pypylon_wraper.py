@@ -7,7 +7,6 @@ from time import sleep
 from time import time
 from PIL import Image
 from typing import Optional
-import copy
 
 class Images():
     """
