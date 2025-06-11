@@ -1,13 +1,11 @@
 import numpy as np
-import uuid
 import cv2
 from pypylon import pylon
 from pathlib import Path
 from time import sleep
-from time import time
+import time
 from PIL import Image
 from typing import Optional
-
 class Images():
     """
     Klasa do zarządzania kolekcją obrazów z podstawowymi operacjami przetwarzania.
@@ -48,7 +46,7 @@ class Images():
         """
         return Images(self.images.copy(), self.format)
         
-    def save(self, folder_path: Optional[str] = None, filename: str = "saved_image", format: str = "png"): 
+    def save(self, folder_path: Optional[str] = None, filename: str = "saved_image", format: str = "bmp"): 
         """
         Zapisuje obrazy do plików w określonym formacie.
         
@@ -56,35 +54,38 @@ class Images():
             folder_path (Optional[str]): Ścieżka do folderu docelowego. 
                                        Jeśli None, używa "dummy_folder"
             filename (str): Nazwa bazowa pliku (bez rozszerzenia)
-            format (str): Format zapisu ("png" lub "npy")
+            format (str): Format zapisu ("png", "bmp" lub "npy")
             
         Returns:
             Path: Ścieżka do utworzonego folderu
             
         Raises:
-            TypeError: Gdy format nie jest "png" ani "npy"
+            TypeError: Gdy format nie jest "png", "bmp" ani "npy"
         """
         if folder_path is None: folder_path = "dummy_folder"
-        if format not in("png","npy"): raise TypeError("invalid format use 'png' or 'npy'")
+        if format not in("png","npy", "bmp"): raise TypeError("invalid format use 'png', 'npy' or bmp")
         path = self._create_folder(folder_path)
-        if format == "png":
+        if format in ("bmp", "png"):
             
             if len(self.images) > 1:
-                for img in self.images:
+                for i, img in enumerate(self.images):
                     img = Image.fromarray(img)
-                    id = uuid.uuid1()
-                    img_filename = path / f"{filename}_{id}.png"
+                    time_stamp = time.strftime("%Y_%m_%d-%H_%M_%S")
+                    img_filename = path / f"{filename}_{time_stamp}_{i:03d}.{format}"
                     img.save(str(img_filename))
+                    print("elo")
+                    
             else :
                 imgs = np.squeeze(self.images,0)
                 imgs = Image.fromarray(imgs)
-                id = uuid.uuid1()
-                img_filename:Path = path / f"{filename}_{id}.png"
+                time_stamp = time.strftime("%Y_%m_%d-%H_%M_%S")
+                img_filename:Path = path / f"{filename}_{time_stamp}.{format}"
                 imgs.save(str(img_filename))
+                print("dupa")
                 
         if format == "npy":
-            id = uuid.uuid1()
-            img_filename = path / f"{filename}_{id}"
+            time_stamp = time.strftime("%Y_%m_%d-%H_%M_%S")
+            img_filename = path / f"{filename}_{time_stamp}"
             np.save(str(img_filename),self.images)
         return path
     
@@ -165,23 +166,23 @@ class Images():
         
 def load_images(path: str):
     """
-    Ładuje obrazy z pliku .npy lub z folderu zawierającego pliki .png.
+    Ładuje obrazy z pliku .npy lub z folderu zawierającego pliki .png/.bmp.
     
     Automatycznie wykrywa format obrazów (BGR lub Gray) na podstawie ich kształtu.
     
     Args:
-        path (str): Ścieżka do pliku .npy lub folderu z obrazami .png
+        path (str): Ścieżka do pliku .npy lub folderu z obrazami .png/.bmp
         
     Returns:
         Images: Obiekt Images z załadowanymi obrazami
         
     Note:
         - Dla plików .npy: ładuje całą tablicę
-        - Dla folderów: ładuje wszystkie pliki .png z folderu
+        - Dla folderów: ładuje wszystkie pliki .png i .bmp z folderu
         - Format jest wykrywany automatycznie na podstawie liczby kanałów
     """
     fpath = Path(path)
-    if fpath.suffix.lower == ".npy":
+    if fpath.suffix.lower() == ".npy":
         imgs = np.load(fpath,allow_pickle=True)
         if len(imgs) > 0 and all(len(img.shape) > 0 and img.shape[-1] == 3 for img in imgs):
             format = "BGR"
@@ -190,7 +191,7 @@ def load_images(path: str):
         
     imgs = []
     for img_path in fpath.iterdir():
-        if img_path.suffix.lower() == ".png":
+        if img_path.suffix.lower() in (".png",".bmp"):
            img = cv2.imread(str(img_path))
            imgs.append(img)
            
@@ -212,7 +213,7 @@ class PypylonWrapper:
         format: Format pikseli kamery (jeśli skonfigurowany)
     """
 
-    def __init__(self, configs: Optional[dict] = None):
+    def __init__(self, configs: Optional[dict] = None, pfs_file_path: Optional[str] = None):
         """
         Inicjalizuje wrapper kamery Basler.
         
@@ -225,6 +226,13 @@ class PypylonWrapper:
         if configs:
             self.cam.Open()
             self._cam_configs(**configs)
+            self.cam.Close()
+            
+        if pfs_file_path:
+            pfs_path = Path(pfs_file_path)
+            if pfs_path.suffix.lower() != ".pfs": raise TypeError("file must be .pfs")
+            self.cam.Open()
+            pylon.FeaturePersistence.Load(str(pfs_path),self.cam.GetNodeMap())
             self.cam.Close()
         
         
@@ -254,26 +262,26 @@ class PypylonWrapper:
             self.cam.AcquisitionFrameRate.Value = frame_rate
         
             
-    def grab_images(self, num_of_iamges: int = 5, format: str = "grayscale", wait: Optional[int|float] = None):
+    def grab_images(self, num_of_images: int = 5, format: str = "Gray", wait: Optional[int|float] = None):
         """
         Grabuje określoną liczbę obrazów z kamery.
         
         Args:
-            num_of_iamges (int): Liczba obrazów do pobrania
-            format (str): Format obrazów ("grayscale" lub "BGR")
+            num_of_images (int): Liczba obrazów do pobrania
+            format (str): Format obrazów ("Gray" lub "BGR")
             wait (Optional[int|float]): Czas oczekiwania między obrazami w sekundach
             
         Returns:
             Images: Obiekt Images z pobranymi obrazami
             
         Raises:
-            TypeError: Gdy format nie jest "grayscale" ani "BGR"
+            TypeError: Gdy format nie jest "Gray" ani "BGR"
         """
         
-        if format not in ("grayscale","BGR"): raise TypeError("invalid format use grayscale or BGR")
+        if format not in ("Gray","BGR"): raise TypeError("invalid format use Gray or BGR")
         converter = None 
         if format == "BGR": 
-            converter = self._BGR_conventer()
+            converter = self._BGR_converter()
         
         imgs=[] 
         timeout = 2000
@@ -281,7 +289,7 @@ class PypylonWrapper:
         self.cam.Open()
         self.cam.StartGrabbing()
         
-        for i in range(num_of_iamges):
+        for i in range(num_of_images):
             with self.cam.RetrieveResult(timeout) as result:
                 result = converter.Convert(result) if converter else result
                 imgs.append(result.Array)
@@ -290,7 +298,7 @@ class PypylonWrapper:
         imgs = np.array(imgs)
         return Images(imgs,format)
     
-    def live_video(self, imgs_to_grab: Optional[int] = None, wait: Optional[int|float] = None):
+    def auto_grabing(self, imgs_to_grab: Optional[int] = None, wait: Optional[int|float] = None):
         """
         Wyświetla live video z kamery z możliwością grabowania obrazów.
         
@@ -311,21 +319,21 @@ class PypylonWrapper:
         end_time = 0 
         imgs = []
         self.cam.StartGrabbing(pylon.GrabStrategy_LatestImageOnly)
-        converter = self._BGR_conventer()
+        converter = self._BGR_converter()
         
         while self.cam.IsGrabbing():
-            timeN = time()
+            timeN = time.time()
             grabresult = self.cam.RetrieveResult(5000,pylon.TimeoutHandling_ThrowException)
             
             if grabresult.GrabSucceeded():
                 image = converter.Convert(grabresult)
                 image = image.Array
-                
+            
                 if grabbing_flag and i is not None and imgs_grabed < i:
                         if wait and timeN - end_time > wait:
                             imgs.append(image)
                             imgs_grabed += 1
-                            end_time = time()
+                            end_time = time.time()
                         if not wait: 
                             imgs.append(image)
                             imgs_grabed += 1
@@ -341,9 +349,60 @@ class PypylonWrapper:
                     cv2.destroyAllWindows()
                     break
                 if input == ord(" ") and imgs_to_grab is not None: grabbing_flag = True
-
+                
+            else:
+                print("grabbing failed")
+                break
+                
+    def button_grabbing(self,button: str = "h"):
+        """
+        Wyświetla live video z kamery z możliwością grabowania obrazów poprzez naciśnięcie klawisza.
+        
+        Sterowanie:
+        - 'q': Zakończenie i zwrócenie pobranych obrazów
+        - button (domyślnie 'h'): Pobranie pojedynczego obrazu
+        
+        Args:
+            button (str): Klawisz do grabowania obrazów (domyślnie "h")
+            
+        Returns:
+            Optional[Images]: Obiekt Images z pobranymi obrazami lub None jeśli nie pobrano żadnych
+        """
+        num_gr_photos = 0
+        grabed_photos = []
+        
+        self.cam.StartGrabbing(pylon.GrabStrategy_LatestImageOnly)
+        converter = self._BGR_converter()
+        while self.cam.IsGrabbing():
+            grabresult = self.cam.RetrieveResult(5000,pylon.TimeoutHandling_ThrowException)
+            
+            if grabresult.GrabSucceeded():
+                image = converter.Convert(grabresult)
+                image = image.Array
+                cv_img = image
+            else:
+                print("grabbing failed")
+                break
+            
+            cv_img = cv2.putText(cv_img,f"photos: {num_gr_photos}", (40,50),cv2.FONT_HERSHEY_SIMPLEX,
+                                 fontScale=1,color=(0,255,0),thickness=2)
+            
+            cv2.imshow("BaslerCam",cv_img)
+            input = cv2.waitKey(1)
+            if input == ord("q"):
+                    cv2.destroyAllWindows()
+                    if num_gr_photos > 0:
+                        grabed_photos = np.array(grabed_photos)
+                        return Images(grabed_photos,"BGR")
+                    else: break
+                
+            if input == ord(button):
+                grabed_photos.append(image)
+                num_gr_photos += 1
+            
+                
     
-    def _BGR_conventer(self):
+    def _BGR_converter(self):
         converter = pylon.ImageFormatConverter()
         converter.OutputPixelFormat = pylon.PixelType_BGR8packed
         converter.OutputBitAlignment = pylon.OutputBitAlignment_MsbAligned
