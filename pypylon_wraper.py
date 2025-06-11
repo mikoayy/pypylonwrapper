@@ -73,7 +73,6 @@ class Images():
                     time_stamp = time.strftime("%Y_%m_%d-%H_%M_%S")
                     img_filename = path / f"{filename}_{time_stamp}_{i:03d}.{format}"
                     img.save(str(img_filename))
-                    print("elo")
                     
             else :
                 imgs = np.squeeze(self.images,0)
@@ -81,7 +80,6 @@ class Images():
                 time_stamp = time.strftime("%Y_%m_%d-%H_%M_%S")
                 img_filename:Path = path / f"{filename}_{time_stamp}.{format}"
                 imgs.save(str(img_filename))
-                print("dupa")
                 
         if format == "npy":
             time_stamp = time.strftime("%Y_%m_%d-%H_%M_%S")
