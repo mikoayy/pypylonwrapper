@@ -5,6 +5,7 @@ img = load_single_img("/home/mikoay/Documents/niezdatne/h3.2_180_1/wiertlo_2025_
 
 configs={
     "blur_ksize": (5,5),
+    "blur_sigma": 0.0,
     "strenght": 1.5,
     "treshold": 35,
     "closing_kernel": (17,17),
@@ -25,4 +26,3 @@ plt.title("przerobione")
 plt.imshow(img_p[0],cmap="gray")
 plt.axis(False)
 plt.show()
-
