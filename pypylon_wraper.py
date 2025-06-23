@@ -1,11 +1,14 @@
 import numpy as np
 import cv2
+import concurrent.futures
 from pypylon import pylon
+from functools import partial
 from pathlib import Path
 from time import sleep
 import time
 from PIL import Image
 from typing import Optional
+
 class Images():
     """
     Klasa do zarządzania kolekcją obrazów z podstawowymi operacjami przetwarzania.
@@ -38,13 +41,8 @@ class Images():
         return iter(self.images)
     
     def copy(self):
-        """
-        Tworzy głęboką kopię obiektu Images.
-        
-        Returns:
-            Images: Nowa instancja Images z skopiowanymi obrazami
-        """
         return Images(self.images.copy(), self.format)
+    
         
     def save(self, folder_path: Optional[str] = None, filename: str = "saved_image", format: str = "bmp"): 
         """
@@ -87,32 +85,36 @@ class Images():
             np.save(str(img_filename),self.images)
         return path
     
-    def pipline(self, treshold: int = 150):
-        """
-        Wykonuje pipeline przetwarzania obrazu: konwersja do skali szarości + binaryzacja.
+    def pipeline(self,blur_ksize:tuple=(5,5),strenght:float=1.5,treshold:int=35,closing_kernel: tuple=(17,17),max_workers=4):
         
-        Jeśli obrazy są w formacie BGR, najpierw konwertuje je do skali szarości,
-        następnie stosuje progowanie binarne.
+        def photo_processor(img,ksize,strenght,treshold,closing_kernel):
+            blur = cv2.GaussianBlur(img,ksize,0)
+            sharp = cv2.addWeighted(blur,1.0+strenght,blur,-strenght,0)
+            gray = cv2.cvtColor(blur,cv2.COLOR_BGR2GRAY)
+            _, tresh = cv2.threshold(gray,treshold,255,cv2.THRESH_BINARY)
+            kernel = np.ones(closing_kernel,np.uint8)
+            closing = cv2.morphologyEx(tresh,cv2.MORPH_CLOSE,kernel)
+            return closing
+        # def photo_processor(img,ksize,strenght,treshold,closing_kernel):
+        #     gray = cv2.cvtColor(img,cv2.COLOR_BGR2GRAY)
+        #     _, tresh = cv2.threshold(gray,treshold,255,cv2.THRESH_BINARY)
+        #     kernel = np.ones(closing_kernel,np.uint8)
+        #     closing = cv2.morphologyEx(tresh,cv2.MORPH_CLOSE,kernel)
+        #     blur = cv2.GaussianBlur(closing,ksize,0)
+        #     sharp = cv2.addWeighted(blur,1.0+strenght,blur,-strenght,0)
+        #     return sharp
         
-        Args:
-            treshold (int): Próg binaryzacji (0-255)
-            
-        Returns:
-            Images: Obiekt Images z przetworzonymi obrazami (modyfikuje siebie)
-        """
-        images = self.images
-        format = self.format
-        bimgs = []
-        if format == "BGR":
-            images = np.array([cv2.cvtColor(img,cv2.COLOR_BGR2GRAY) for img in images])
-            self.format = "Gray"
-        
-        for img in images:
-            _, bimg =cv2.threshold(img,treshold,255,cv2.THRESH_BINARY)
-            bimgs.append(bimg)
-        bimgs = np.array(bimgs)
-        self.images = bimgs
+        imgs = self.images
+        processor = partial(photo_processor,ksize=blur_ksize,strenght=strenght,treshold=treshold,closing_kernel=closing_kernel)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as excecutor:
+            procesed_imgs = list(excecutor.map(processor,imgs))
+            procesed_imgs = np.array(procesed_imgs)
+            self.images = procesed_imgs
+            self.shape = self.images.shape
+            self.format = "GRAY"
         return self
+            
+        
     
     def change_format(self, format: str):
         """
@@ -162,23 +164,21 @@ class Images():
         else:
             raise TypeError("folder path must be a string")   
         
-def load_images(path: str):
-    """
-    Ładuje obrazy z pliku .npy lub z folderu zawierającego pliki .png/.bmp.
-    
-    Automatycznie wykrywa format obrazów (BGR lub Gray) na podstawie ich kształtu.
-    
-    Args:
-        path (str): Ścieżka do pliku .npy lub folderu z obrazami .png/.bmp
+def load_single_img(path:str):
+    img = cv2.imread(path)
+    img = np.array(img)
+    img = np.expand_dims(img,axis=0)    
+    return Images(img,"BGR")
+
+def merge(a1,a2):
+    if a1.format != a2.format: raise TypeError("invalid format")
+    return Images(np.concatenate((a1.images,a2.images)),a1.format)
         
-    Returns:
-        Images: Obiekt Images z załadowanymi obrazami
-        
-    Note:
-        - Dla plików .npy: ładuje całą tablicę
-        - Dla folderów: ładuje wszystkie pliki .png i .bmp z folderu
-        - Format jest wykrywany automatycznie na podstawie liczby kanałów
-    """
+def load_images(path: str, max_workers: int = 4): 
+    
+    def _load_single_img(imgPath: str):
+       return cv2.imread(imgPath)
+   
     fpath = Path(path)
     if fpath.suffix.lower() == ".npy":
         imgs = np.load(fpath,allow_pickle=True)
@@ -187,17 +187,19 @@ def load_images(path: str):
         else: format = "Gray"
         return Images(imgs,format)        
         
-    imgs = []
-    for img_path in fpath.iterdir():
-        if img_path.suffix.lower() in (".png",".bmp"):
-           img = cv2.imread(str(img_path))
-           imgs.append(img)
-           
+    subFpaths = [subFpath for subFpath in fpath.iterdir()]
+    imgsPath = []
+    for subFpath in subFpaths:
+        for imgPath in subFpath.iterdir():
+            if imgPath.suffix.lower() in (".png",".bmp"):
+                imgsPath.append(str(imgPath))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        imgs = list(executor.map(_load_single_img,imgsPath))
     imgs = np.array(imgs)
-    if len(imgs) > 0 and all(len(img.shape) > 0 and img.shape[-1] == 3 for img in imgs):
-        format = "BGR"
-    else: format = "Gray"
-    return Images(imgs,format)        
+    return Images(imgs,format="BGR")
+            
+
+   
         
 class PypylonWrapper:
     """
@@ -377,11 +379,13 @@ class PypylonWrapper:
             if grabresult.GrabSucceeded():
                 image = converter.Convert(grabresult)
                 image = image.Array
-                cv_img = image
+                cv_img = np.array(image).copy()
             else:
                 print("grabbing failed")
                 break
             
+            cv_img = cv2.cvtColor(cv_img,cv2.COLOR_RGB2BGR)
+            cv_img = cv2.resize(cv_img,(1280,720))
             cv_img = cv2.putText(cv_img,f"photos: {num_gr_photos}", (40,50),cv2.FONT_HERSHEY_SIMPLEX,
                                  fontScale=1,color=(0,255,0),thickness=2)
             
@@ -402,7 +406,7 @@ class PypylonWrapper:
     
     def _BGR_converter(self):
         converter = pylon.ImageFormatConverter()
-        converter.OutputPixelFormat = pylon.PixelType_BGR8packed
+        converter.OutputPixelFormat = pylon.PixelType_RGB8packed
         converter.OutputBitAlignment = pylon.OutputBitAlignment_MsbAligned
         return converter
     
@@ -414,3 +418,6 @@ class PypylonWrapper:
         """
         self.cam.StopGrabbing()
         self.cam.Close()
+
+
+    
