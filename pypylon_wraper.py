@@ -4,6 +4,7 @@ import concurrent.futures
 from pypylon import pylon
 from functools import partial
 from pathlib import Path
+from typing import Union
 from time import sleep
 import time
 from PIL import Image
@@ -85,10 +86,31 @@ class Images():
             np.save(str(img_filename),self.images)
         return path
     
-    def pipeline(self,blur_ksize:tuple=(5,5),strenght:float=1.5,treshold:int=35,closing_kernel: tuple=(17,17),max_workers=4):
+    def pipeline(self,blur_ksize:tuple=(5,5),blur_sigma:float=0.0,strenght:float=1.5,
+                 treshold:int=35,closing_kernel: tuple=(17,17),max_workers=4):
+        """
+        Przetwarza obrazy przez pipeline obróbki: blur → sharpening → grayscale → threshold → morfologia.
         
-        def photo_processor(img,ksize,strenght,treshold,closing_kernel):
-            blur = cv2.GaussianBlur(img,ksize,0)
+        Wykorzystuje wielowątkowość do równoległego przetwarzania obrazów.
+        
+        Args:
+            blur_ksize (tuple): Rozmiar kernela dla Gaussian Blur (domyślnie (5,5))
+            blur_sigma (float): Odchylenie standardowe dla Gaussian Blur (domyślnie 0.0)
+            strenght (float): Siła wyostrzania (domyślnie 1.5)
+            treshold (int): Próg binaryzacji (domyślnie 35)
+            closing_kernel (tuple): Rozmiar kernela dla operacji morfologicznej (domyślnie (17,17))
+            max_workers (int): Maksymalna liczba wątków (domyślnie 4)
+            
+        Returns:
+            self: Zwraca obiekt Images z przetworzonymi obrazami (modyfikuje siebie)
+            
+        Note:
+            Pipeline kolejno wykonuje: rozmycie → wyostrzanie → konwersja na grayscale →
+            progowanie binarne → zamknięcie morfologiczne
+        """
+        
+        def photo_processor(img,ksize,sigma,strenght,treshold,closing_kernel):
+            blur = cv2.GaussianBlur(img,ksize,sigma)
             sharp = cv2.addWeighted(blur,1.0+strenght,blur,-strenght,0)
             gray = cv2.cvtColor(blur,cv2.COLOR_BGR2GRAY)
             _, tresh = cv2.threshold(gray,treshold,255,cv2.THRESH_BINARY)
@@ -105,7 +127,8 @@ class Images():
         #     return sharp
         
         imgs = self.images
-        processor = partial(photo_processor,ksize=blur_ksize,strenght=strenght,treshold=treshold,closing_kernel=closing_kernel)
+        processor = partial(photo_processor,ksize=blur_ksize,sigma=blur_sigma,strenght=strenght,
+                            treshold=treshold,closing_kernel=closing_kernel)
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as excecutor:
             procesed_imgs = list(excecutor.map(processor,imgs))
             procesed_imgs = np.array(procesed_imgs)
@@ -162,44 +185,7 @@ class Images():
             fpath.mkdir(parents=True,exist_ok=True)
             return fpath
         else:
-            raise TypeError("folder path must be a string")   
-        
-def load_single_img(path:str):
-    img = cv2.imread(path)
-    img = np.array(img)
-    img = np.expand_dims(img,axis=0)    
-    return Images(img,"BGR")
-
-def merge(a1,a2):
-    if a1.format != a2.format: raise TypeError("invalid format")
-    return Images(np.concatenate((a1.images,a2.images)),a1.format)
-        
-def load_images(path: str, max_workers: int = 4): 
-    
-    def _load_single_img(imgPath: str):
-       return cv2.imread(imgPath)
-   
-    fpath = Path(path)
-    if fpath.suffix.lower() == ".npy":
-        imgs = np.load(fpath,allow_pickle=True)
-        if len(imgs) > 0 and all(len(img.shape) > 0 and img.shape[-1] == 3 for img in imgs):
-            format = "BGR"
-        else: format = "Gray"
-        return Images(imgs,format)        
-        
-    subFpaths = [subFpath for subFpath in fpath.iterdir()]
-    imgsPath = []
-    for subFpath in subFpaths:
-        for imgPath in subFpath.iterdir():
-            if imgPath.suffix.lower() in (".png",".bmp"):
-                imgsPath.append(str(imgPath))
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        imgs = list(executor.map(_load_single_img,imgsPath))
-    imgs = np.array(imgs)
-    return Images(imgs,format="BGR")
-            
-
-   
+            raise TypeError("folder path must be a string")      
         
 class PypylonWrapper:
     """
@@ -221,6 +207,8 @@ class PypylonWrapper:
             configs (Optional[dict]): Słownik z konfiguracją kamery.
                                     Możliwe klucze: 'img_size', 'gain', 
                                     'pixel_format', 'frame_rate'
+            pfs_file_path (Optional[str]): Ścieżka do pliku konfiguracyjnego .pfs 
+                                         z ustawieniami kamery
         """
         self.cam = pylon.InstantCamera(pylon.TlFactory.GetInstance().CreateFirstDevice())
         if configs:
@@ -418,6 +406,110 @@ class PypylonWrapper:
         """
         self.cam.StopGrabbing()
         self.cam.Close()
+
+
+def load_single_img(path: str):
+    """
+    Ładuje pojedynczy obraz z podanej ścieżki.
+    
+    Args:
+        path (str): Ścieżka do pliku obrazu
+        
+    Returns:
+        Images: Obiekt Images z pojedynczym obrazem w formacie BGR
+        
+    Note:
+        Obraz jest automatycznie rozszerzany o wymiar batch (axis=0)
+    """
+    img = cv2.imread(path)
+    img = np.array(img)
+    img = np.expand_dims(img,axis=0)    
+    return Images(img,"BGR")
+
+def merge(a1, a2):
+    """
+    Łączy dwa obiekty Images w jeden.
+    
+    Args:
+        a1 (Images): Pierwszy obiekt Images
+        a2 (Images): Drugi obiekt Images
+        
+    Returns:
+        Images: Połączony obiekt Images
+        
+    Raises:
+        TypeError: Gdy formaty obrazów się różnią
+    """
+    if a1.format != a2.format: raise TypeError("invalid format")
+    return Images(np.concatenate((a1.images,a2.images)),a1.format)
+
+def get_photos_paths(folder_path: str):
+    """
+    Pobiera ścieżki do wszystkich obrazów z podfoldedów.
+    
+    Przeszukuje wszystkie podfoldery w podanej ścieżce i zbiera 
+    ścieżki do plików .png i .bmp.
+    
+    Args:
+        folder_path (str): Ścieżka do folderu głównego
+        
+    Returns:
+        np.ndarray: Tablica ze ścieżkami do obrazów
+    """
+    img_paths = []
+    folder__path=Path(folder_path)
+    sub_f_paths = [subFpath for subFpath in folder__path.iterdir()]
+    for subFpath in sub_f_paths:
+        for imgPath in subFpath.iterdir():
+            if imgPath.suffix.lower() in (".png",".bmp"):
+                img_paths.append(str(imgPath))
+    return np.array(img_paths)
+
+def load_images_npy(path: str):
+    """
+    Ładuje obrazy z pliku .npy.
+    
+    Args:
+        path (str): Ścieżka do pliku .npy
+        
+    Returns:
+        Images: Obiekt Images z załadowanymi obrazami
+        
+    Note:
+        Format jest wykrywany automatycznie na podstawie liczby kanałów obrazu
+    """
+    fpath = Path(path)
+    if fpath.suffix.lower() == ".npy":
+        imgs = np.load(fpath,allow_pickle=True)
+        if len(imgs) > 0 and all(len(img.shape) > 0 and img.shape[-1] == 3 for img in imgs):
+            format = "BGR"
+        else: format = "Gray"
+        return Images(imgs,format) 
+
+def load_images(paths_list: Union[list[str],np.ndarray], max_workers: int = 4):
+    """
+    Ładuje obrazy równolegle z podanych ścieżek.
+    
+    Wykorzystuje wielowątkowość do szybkiego ładowania dużej liczby obrazów.
+    
+    Args:
+        paths_list (Union[list[str], np.ndarray]): Lista lub tablica ścieżek do obrazów
+        max_workers (int): Maksymalna liczba wątków (domyślnie 4)
+        
+    Returns:
+        Images: Obiekt Images z załadowanymi obrazami w formacie BGR
+        
+    Note:
+        Wszystkie obrazy są ładowane jako BGR niezależnie od oryginalnego formatu
+    """
+    
+    def _load_single_img(imgPath: str):
+       return cv2.imread(imgPath)
+   
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        imgs = list(executor.map(_load_single_img,paths_list))
+    imgs = np.array(imgs)
+    return Images(imgs,format="BGR") 
 
 
     
